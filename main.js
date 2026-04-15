@@ -1,71 +1,118 @@
-const {
-  default: makeWASocket,
+import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion
-} = require("@whiskeysockets/baileys");
+} from "@whiskeysockets/baileys";
+import { Boom } from "@hapi/boom";
+import qrcode from "qrcode-terminal";
+import pino from "pino";
 
-const { Boom } = require("@hapi/boom");
-const qrcode = require("qrcode-terminal");
+import handler from "./handler.js";
+import logger from "./utils/logger.js";
+import { getText } from "./utils/helpers.js";
 
-const config = require("./config");
-const handler = require("./handler");
-const logger = require("./utils/logger");
-const { getText } = require("./utils/helpers");
+let isStarting = false;
 
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState("./sessions");
-  const { version } = await fetchLatestBaileysVersion();
+  if (isStarting) return;
+  isStarting = true;
 
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    printQRInTerminal: false
-  });
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState("./sessions");
+    const { version } = await fetchLatestBaileysVersion();
 
-  sock.ev.on("creds.update", saveCreds);
+    const sock = makeWASocket({
+      version,
+      auth: state,
+      printQRInTerminal: false,
+      logger: pino({ level: "silent" }),
+      browser: ["TiendaBot", "Chrome", "1.0.0"],
+      syncFullHistory: false
+    });
 
-  sock.ev.on("connection.update", (update) => {
-    const { connection, qr, lastDisconnect } = update;
+    sock.ev.on("creds.update", saveCreds);
 
-    if (qr) {
-      console.log("Escanea el QR:");
-      qrcode.generate(qr, { small: true });
-    }
+    sock.ev.on("connection.update", async (update) => {
+      const { connection, qr, lastDisconnect } = update;
 
-    if (connection === "open") {
-      logger.info("Bot conectado");
-    }
-
-    if (connection === "close") {
-      const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
-
-      if (code !== DisconnectReason.loggedOut) {
-        logger.warn("Reconectando...");
-        startBot();
-      } else {
-        logger.error("Sesion cerrada");
+      if (qr) {
+        console.clear();
+        console.log(`
+╔════════════════════════════════════════════╗
+║              ESCANEA ESTE QR              ║
+╚════════════════════════════════════════════╝
+`);
+        qrcode.generate(qr, { small: true });
+        console.log("\n");
       }
-    }
-  });
 
-  sock.ev.on("messages.upsert", async ({ messages }) => {
-    const msg = messages[0];
-    if (!msg.message || msg.key.fromMe) return;
+      if (connection === "open") {
+        logger.banner();
+        logger.ok("Bot conectado correctamente");
+        isStarting = false;
+      }
 
-    const text = getText(msg.message);
-    if (!text) return;
+      if (connection === "close") {
+        const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        logger.warn(`Conexión cerrada. Código: ${code}`);
 
-    const context = {
-      sock,
-      msg,
-      text,
-      from: msg.key.remoteJid,
-      sender: msg.key.participant || msg.key.remoteJid
-    };
+        isStarting = false;
 
-    handler(context);
-  });
+        if (code !== DisconnectReason.loggedOut) {
+          logger.warn("Reconectando en 5 segundos...");
+          setTimeout(() => startBot(), 5000);
+        } else {
+          logger.error("Sesión cerrada. Borra la carpeta sessions para vincular otra vez.");
+        }
+      }
+    });
+
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
+      try {
+        if (type !== "notify") return;
+        if (!messages || !messages.length) return;
+
+        const msg = messages[0];
+        if (!msg?.message) return;
+        if (msg.key?.remoteJid === "status@broadcast") return;
+        if (msg.key?.fromMe) return;
+
+        const sender =
+          msg.key?.participant ||
+          msg.key?.remoteJid ||
+          "";
+
+        const from = msg.key?.remoteJid || "";
+        const text = getText(msg.message)?.trim() || "";
+        const messageType = Object.keys(msg.message || {})[0] || "desconocido";
+
+        console.log("========== MENSAJE ==========");
+        console.log("FROM:", from);
+        console.log("SENDER:", sender);
+        console.log("PUSH NAME:", msg.pushName || "(sin nombre)");
+        console.log("TIPO:", messageType);
+        console.log("TEXTO:", text || "(sin texto)");
+        console.log("=============================");
+
+        const context = {
+          sock,
+          msg,
+          text,
+          from,
+          sender
+        };
+
+        await handler(context);
+      } catch (err) {
+        logger.error(`Error en messages.upsert: ${err?.message || err}`);
+      }
+    });
+
+  } catch (err) {
+    isStarting = false;
+    logger.error(`Error iniciando bot: ${err?.message || err}`);
+    setTimeout(() => startBot(), 5000);
+  }
 }
 
 startBot();
