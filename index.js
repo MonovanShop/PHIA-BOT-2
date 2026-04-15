@@ -1,43 +1,35 @@
-const fs = require("fs");
-const readline = require("readline");
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import logger from "./utils/logger.js";
 
-// crear carpetas si no existen
-["sessions", "logs", "database"].forEach(dir => {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const folders = ["sessions", "logs", "database"];
+
+for (const folder of folders) {
+  const fullPath = path.join(__dirname, folder);
+  if (!fs.existsSync(fullPath)) {
+    fs.mkdirSync(fullPath, { recursive: true });
+  }
+}
+
+process.on("uncaughtException", (err) => {
+  logger.error(`uncaughtException: ${err?.message || err}`);
 });
 
-// errores globales
-process.on("uncaughtException", console.error);
-process.on("unhandledRejection", console.error);
-
-// interfaz de terminal
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
+process.on("unhandledRejection", (reason) => {
+  logger.error(`unhandledRejection: ${reason?.message || reason}`);
 });
 
+console.clear();
 console.log(`
-==============================
-   BOT TIENDA WHATSAPP
-==============================
-
-1) Generar QR
-2) Salir
-
-Escribe una opción:
+╔════════════════════════════════════════════╗
+║                                            ║
+║            INICIANDO TIENDA BOT            ║
+║                                            ║
+╚════════════════════════════════════════════╝
 `);
 
-rl.on("line", (input) => {
-  const opcion = input.trim();
-
-  if (opcion === "1") {
-    console.log("\nGenerando QR...\n");
-    rl.close();
-    require("./main"); // inicia el bot
-  } else if (opcion === "2") {
-    console.log("Saliendo...");
-    process.exit(0);
-  } else {
-    console.log("Opción no válida. Escribe 1 o 2.");
-  }
-});
+await import("./main.js");
